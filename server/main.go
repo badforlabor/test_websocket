@@ -17,6 +17,7 @@ func main() {
 		writer.Write([]byte("hello"))
 	})
 	http.HandleFunc("/ws", wsPage)
+	http.HandleFunc("/stress", stress)
 	http.ListenAndServe(":8088", nil)
 }
 

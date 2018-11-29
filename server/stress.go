@@ -1,7 +1,7 @@
 /**
  * Auth :   liubo
- * Date :   2018/11/29 15:00
- * Comment: 
+ * Date :   2018/11/29 16:17
+ * Comment: 压力测试用的
  */
 
 package main
@@ -9,59 +9,71 @@ package main
 import (
 	"fmt"
 	"github.com/gorilla/websocket"
+	"net/http"
 	"sync"
 	"time"
 )
 
-const (
-	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
+func init() {
+	var moniter func()
+	moniter = func() {
+		fmt.Println("当前连接数：", len(stressEchos))
+		time.AfterFunc(3 * time.Second, func() {
+			moniter()
+		})
+	}
+	moniter()
+}
 
-	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
+func stress(w http.ResponseWriter, r *http.Request) {
 
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
+	upgrader := websocket.Upgrader{
+		EnableCompression: true,
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
 
-	// Maximum message size allowed from peer.
-	maxMessageSize = 512
-)
 
-func wsChat(conn *websocket.Conn) {
-	one := OneChatter{conn: conn, msgBuffer: make(chan []byte, 128)}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		ResponseJSON(w, http.StatusBadRequest, errMsg{err.Error()})
+		return
+	}
 
-	addChat(&one)
+	one := OneEcho{conn: conn, msgBuffer: make(chan []byte, 128)}
+
+	addEcho(&one)
 
 	go one.read()
 	go one.write()
 }
 
+var stressEchos []*OneEcho
+var stressEchosMutex sync.RWMutex
 
-type OneChatter struct {
+func addEcho(one *OneEcho) {
+	stressEchosMutex.Lock()
+	stressEchos = append(stressEchos, one)
+	stressEchosMutex.Unlock()
+}
+func removeEcho(one *OneEcho) {
+	stressEchosMutex.Lock()
+	for i, v := range stressEchos {
+		if v == one {
+			stressEchos = append(stressEchos[0:i], stressEchos[i+1:]...)
+		}
+	}
+	stressEchosMutex.Unlock()
+}
+
+
+type OneEcho struct {
 	conn *websocket.Conn
 	msgBuffer chan []byte
 }
 
-// 为了简单，用mutex锁一下，就不用channel了。
-var allChatters []*OneChatter
-var allChattersMutex sync.RWMutex
-func addChat(one *OneChatter) {
-	allChattersMutex.Lock()
-	allChatters = append(allChatters, one)
-	allChattersMutex.Unlock()
-}
-func removeChat(one *OneChatter) {
-	allChattersMutex.Lock()
-	for i, v := range allChatters {
-		if v == one {
-			allChatters = append(allChatters[0:i], allChatters[i+1:]...)
-		}
-	}
-	allChattersMutex.Unlock()
-}
-
-
-func (self *OneChatter)read() {
+func (self *OneEcho)read() {
 	conn := self.conn
 
 	conn.SetReadLimit(maxMessageSize)
@@ -79,19 +91,25 @@ func (self *OneChatter)read() {
 			break
 		}
 
+		if t == websocket.CloseMessage {
+			break
+		}
+
 		// 只转发有效数据。ping包之类的不要转发
 		if t == websocket.TextMessage {
-			broadcast(msg)
+			self.msgBuffer <- msg
 		}
 	}
+
+	removeEcho(self)
 }
-func (self *OneChatter)write() {
+func (self *OneEcho)write() {
 
 	ping := time.NewTicker(pingPeriod)
 	defer func() {
 		self.conn.Close()
 		ping.Stop()
-		removeChat(self)
+		removeEcho(self)
 	}()
 
 
@@ -126,14 +144,4 @@ func (self *OneChatter)write() {
 			}
 		}
 	}
-}
-
-func broadcast(msg []byte) {
-	fmt.Println("转发数据", string(msg))
-
-	allChattersMutex.RLock()
-	for _, one := range allChatters {
-		one.msgBuffer <- msg
-	}
-	allChattersMutex.RUnlock()
 }
